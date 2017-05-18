@@ -6,7 +6,8 @@
  * - signTransaction(tx) -- sign a raw transaction object
  */
 
-const async = require('async')
+const waterfall = require('async/waterfall')
+const parallel = require('async/parallel')
 const inherits = require('util').inherits
 const ethUtil = require('ethereumjs-util')
 const sigUtil = require('eth-sig-util')
@@ -92,9 +93,17 @@ HookedWalletSubprovider.prototype.handleRequest = function(payload, next, end){
 
     case 'eth_sendTransaction':
       var txParams = payload.params[0]
-      async.waterfall([
+      waterfall([
         (cb) => self.validateTransaction(txParams, cb),
         (cb) => self.processTransaction(txParams, cb),
+      ], end)
+      return
+
+    case 'eth_signTransaction':
+      var txParams = payload.params[0]
+      waterfall([
+        (cb) => self.validateTransaction(txParams, cb),
+        (cb) => self.processSignTransaction(txParams, cb),
       ], end)
       return
 
@@ -108,7 +117,7 @@ HookedWalletSubprovider.prototype.handleRequest = function(payload, next, end){
         from: address,
         data: message,
       })
-      async.waterfall([
+      waterfall([
         (cb) => self.validateMessage(msgParams, cb),
         (cb) => self.processMessage(msgParams, cb),
       ], end)
@@ -124,7 +133,7 @@ HookedWalletSubprovider.prototype.handleRequest = function(payload, next, end){
         from: address,
         data: message,
       })
-      async.waterfall([
+      waterfall([
         (cb) => self.validatePersonalMessage(msgParams, cb),
         (cb) => self.processPersonalMessage(msgParams, cb),
       ], end)
@@ -156,16 +165,26 @@ HookedWalletSubprovider.prototype.handleRequest = function(payload, next, end){
 
 HookedWalletSubprovider.prototype.processTransaction = function(txParams, cb) {
   const self = this
-  async.waterfall([
+  waterfall([
     (cb) => self.approveTransaction(txParams, cb),
     (didApprove, cb) => self.checkApproval('transaction', didApprove, cb),
     (cb) => self.finalizeAndSubmitTx(txParams, cb),
   ], cb)
 }
 
+
+HookedWalletSubprovider.prototype.processSignTransaction = function(txParams, cb) {
+  const self = this
+  waterfall([
+    (cb) => self.approveTransaction(txParams, cb),
+    (didApprove, cb) => self.checkApproval('transaction', didApprove, cb),
+    (cb) => self.finalizeTx(txParams, cb),
+  ], cb)
+}
+
 HookedWalletSubprovider.prototype.processMessage = function(msgParams, cb) {
   const self = this
-  async.waterfall([
+  waterfall([
     (cb) => self.approveMessage(msgParams, cb),
     (didApprove, cb) => self.checkApproval('message', didApprove, cb),
     (cb) => self.signMessage(msgParams, cb),
@@ -174,7 +193,7 @@ HookedWalletSubprovider.prototype.processMessage = function(msgParams, cb) {
 
 HookedWalletSubprovider.prototype.processPersonalMessage = function(msgParams, cb) {
   const self = this
-  async.waterfall([
+  waterfall([
     (cb) => self.approvePersonalMessage(msgParams, cb),
     (didApprove, cb) => self.checkApproval('message', didApprove, cb),
     (cb) => self.signPersonalMessage(msgParams, cb),
@@ -274,7 +293,7 @@ HookedWalletSubprovider.prototype.finalizeAndSubmitTx = function(txParams, cb) {
   // can only allow one tx to pass through this flow at a time
   // so we can atomically consume a nonce
   self.nonceLock.take(function(){
-    async.waterfall([
+    waterfall([
       self.fillInTxExtras.bind(self, txParams),
       self.signTransaction.bind(self),
       self.publishTransaction.bind(self),
@@ -282,6 +301,22 @@ HookedWalletSubprovider.prototype.finalizeAndSubmitTx = function(txParams, cb) {
       self.nonceLock.leave()
       if (err) return cb(err)
       cb(null, txHash)
+    })
+  })
+}
+
+HookedWalletSubprovider.prototype.finalizeTx = function(txParams, cb) {
+  const self = this
+  // can only allow one tx to pass through this flow at a time
+  // so we can atomically consume a nonce
+  self.nonceLock.take(function(){
+    waterfall([
+      self.fillInTxExtras.bind(self, txParams),
+      self.signTransaction.bind(self),
+    ], function(err, signedTx){
+      self.nonceLock.leave()
+      if (err) return cb(err)
+      cb(null, {raw: signedTx, tx: txParams})
     })
   })
 }
@@ -319,7 +354,7 @@ HookedWalletSubprovider.prototype.fillInTxExtras = function(txParams, cb){
     reqs.gas = estimateGas.bind(null, self.engine, cloneTxParams(txParams))
   }
 
-  async.parallel(reqs, function(err, result) {
+  parallel(reqs, function(err, result) {
     if (err) return cb(err)
     // console.log('fillInTxExtras - result:', result)
 
