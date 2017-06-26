@@ -1,4 +1,3 @@
-const doWhilst = require('async/doWhilst')
 const inherits = require('util').inherits
 const Stoplight = require('../util/stoplight.js')
 const createVm = require('ethereumjs-vm/lib/hooked').fromWeb3Provider
@@ -64,45 +63,28 @@ VmSubprovider.prototype.handleRequest = function(payload, next, end) {
 }
 
 VmSubprovider.prototype.estimateGas = function(payload, end) {
-    const self = this
-    var lo = 0
-    var hi = self._blockGasLimit
+    const self = this;
 
-    var minDiffBetweenIterations = 1200
-    var prevGasLimit = self._blockGasLimit
-    doWhilst(
-      function(callback) {
-        // Take a guess at the gas, and check transaction validity
-        var mid = (hi + lo) / 2
-        payload.params[0].gas = mid
-        self.runVm(payload, function(err, results) {
-            gasUsed = err ? self._blockGasLimit : ethUtil.bufferToInt(results.gasUsed)
-            if (err || gasUsed === 0) {
-                lo = mid
-            } else {
-                hi = mid
-                // Perf improvement: stop the binary search when the difference in gas between two iterations
-                // is less then `minDiffBetweenIterations`. Doing this cuts the number of iterations from 23
-                // to 12, with only a ~1000 gas loss in precision.
-                if (Math.abs(prevGasLimit - mid) < minDiffBetweenIterations) {
-                    lo = hi
-                }
-            }
-            prevGasLimit = mid
-            callback()
-        })
-      },
-      function() { return lo+1 < hi },
-      function(err) {
-          if (err) {
-              end(err)
-          } else {
-              hi = Math.floor(hi)
-              var gasEstimateHex = rpcHexEncoding.intToQuantityHex(hi)
-              end(null, gasEstimateHex)
-          }
-      }
-    )
+    payload.params[0].gas = self._blockGasLimit;
+
+    self.runVm(payload, function(err, results) {
+        if (err) {
+          //console.log("[runVm callback] error: " + err + "; gas limit: " + self._blockGasLimit);
+          end(err, undefined);
+        }
+
+        //console.log("[runVm callback] used gas: " + ethUtil.bufferToInt(results.gasUsed));
+        
+        // add 5% extra gas
+        var usedGas = Math.floor(ethUtil.bufferToInt(results.gasUsed) * 1.05);
+
+
+        var gasEstimateHex = (usedGas < self._blockGasLimit)
+                              ? rpcHexEncoding.intToQuantityHex(usedGas)
+                              :rpcHexEncoding.intToQuantityHex(self._blockGasLimit);
+
+        end(null, gasEstimateHex);
+    })
 }
 
 VmSubprovider.prototype.runVm = function(payload, cb){
